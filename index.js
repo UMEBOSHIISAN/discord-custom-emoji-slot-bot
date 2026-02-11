@@ -1,13 +1,19 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, escapeMarkdown } = require('discord.js');
 const { loadConfig, getConfig } = require('./lib/config');
-const { loadStats, getStats, recordSpin } = require('./lib/stats');
+const { loadStats, getStats, recordSpin, flushStats } = require('./lib/stats');
 const { getEmojiPool, rollOutcome, decideFinal, animateSpin, maybeSendGifOnce } = require('./lib/slot');
 const { createApp } = require('./lib/web');
 
 // --- 起動時バリデーション ---
 if (!process.env.DISCORD_TOKEN) { console.error('❌ DISCORD_TOKEN missing'); process.exit(1); }
 if (!process.env.ALLOWED_CHANNEL_ID) { console.error('❌ ALLOWED_CHANNEL_ID missing'); process.exit(1); }
+if (!process.env.ADMIN_USER || process.env.ADMIN_USER === 'admin') {
+  console.error('❌ ADMIN_USER が未設定またはデフォルト値です。安全な値を .env に設定してください'); process.exit(1);
+}
+if (!process.env.ADMIN_PASS || process.env.ADMIN_PASS === 'change_me') {
+  console.error('❌ ADMIN_PASS が未設定またはデフォルト値です。安全な値を .env に設定してください'); process.exit(1);
+}
 
 // --- 永続データ読み込み ---
 loadConfig();
@@ -35,13 +41,20 @@ const cooldowns = new Map();
 const runtimeState = { gifSent: false };
 let activeSpins = 0;
 
-// --- クリーンアップ（1時間ごと） ---
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, ts] of cooldowns) {
-    if (now - ts > 120000) cooldowns.delete(id);
-  }
-}, 3600000);
+// --- クールダウンクリーンアップ（コンフィグ連動） ---
+function scheduleCooldownCleanup() {
+  const cfg = getConfig();
+  const ttl = cfg.COOLDOWN_SEC * 2 * 1000;
+  const interval = Math.max(60000, cfg.COOLDOWN_SEC * 1000);
+  setTimeout(() => {
+    const now = Date.now();
+    for (const [id, ts] of cooldowns) {
+      if (now - ts > ttl) cooldowns.delete(id);
+    }
+    scheduleCooldownCleanup();
+  }, interval);
+}
+scheduleCooldownCleanup();
 
 // --- ランキング ---
 function buildRanking() {
@@ -155,7 +168,17 @@ client.on('messageCreate', async (message) => {
 // --- Web管理画面 ---
 const port = parseInt(process.env.WEB_PORT, 10) || 8787;
 const app = createApp();
-app.listen(port, () => console.log(`✅ Web: http://localhost:${port}`));
+const host = process.env.WEB_HOST || '127.0.0.1';
+app.listen(port, host, () => console.log(`✅ Web: http://${host}:${port}`));
 
 // --- Bot起動 ---
 client.login(process.env.DISCORD_TOKEN);
+
+// --- シャットダウン時の stats 最終 flush ---
+async function gracefulShutdown(signal) {
+  console.log(`\n${signal} 受信 — stats を保存中...`);
+  await flushStats();
+  process.exit(0);
+}
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
