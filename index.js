@@ -1,18 +1,19 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client, GatewayIntentBits, escapeMarkdown } = require('discord.js');
 
 // --- 設定 ---
 const ALLOWED_CHANNEL_ID = process.env.ALLOWED_CHANNEL_ID;
 const JACKPOT_GIF_URL = process.env.JACKPOT_GIF_URL || '';
 const COOLDOWN_SEC = parseInt(process.env.COOLDOWN_SEC, 10) || 15;
-const SPIN_COUNT = parseInt(process.env.SPIN_COUNT, 10) || 10;
-const JACKPOT_PROB = parseFloat(process.env.JACKPOT_PROB) || 0.01;
-const NEAR_MISS_PROB = parseFloat(process.env.NEAR_MISS_PROB) || 0.1;
+const SPIN_COUNT = Math.max(4, parseInt(process.env.SPIN_COUNT, 10) || 10);
+const JACKPOT_PROB = Math.min(1, Math.max(0, parseFloat(process.env.JACKPOT_PROB) || 0.01));
+const NEAR_MISS_PROB = Math.min(1, Math.max(0, parseFloat(process.env.NEAR_MISS_PROB) || 0.1));
 const SPECIAL_EMOJI_ID = process.env.SPECIAL_EMOJI_ID || '';
 const BOOSTED_EMOJI_ID = process.env.BOOSTED_EMOJI_ID || '';
-const BOOSTED_WEIGHT = parseInt(process.env.BOOSTED_WEIGHT, 10) || 5;
+const BOOSTED_WEIGHT = Math.max(1, parseInt(process.env.BOOSTED_WEIGHT, 10) || 5);
 const PAIR_TRIGGER_EMOJI_ID = process.env.PAIR_TRIGGER_EMOJI_ID || '';
 const PAIR_REACTION_EMOJI_ID = process.env.PAIR_REACTION_EMOJI_ID || '';
+const MAX_CONCURRENT_SPINS = 3;
 
 // トリガーワード（完全一致）
 const TRIGGERS = ['りよ', 'リヨ', 'びっぐらぶ', '小林', 'シャーマン', 'スロット', '🎰', '回す'];
@@ -29,18 +30,22 @@ const cooldowns = new Map();
 // GIF送信済みフラグ（Bot起動中1回だけ）
 let gifSent = false;
 
+// チャンネル同時実行数
+let activeSpins = 0;
+
 // デイリー統計（日付ごと）
-const dailyStats = new Map(); // { date: Map<userId, { spins, jackpots, username }> }
+const dailyStats = new Map();
 
 function getTodayKey() {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  // JST固定 (UTC+9)
+  const now = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
 }
 
 function recordSpin(userId, username, isJackpot) {
   const today = getTodayKey();
   if (!dailyStats.has(today)) {
-    dailyStats.clear(); // 前日分をクリア
+    dailyStats.clear();
     dailyStats.set(today, new Map());
   }
   const stats = dailyStats.get(today);
@@ -54,7 +59,7 @@ function recordSpin(userId, username, isJackpot) {
 }
 
 // 連続ペア記録
-const lastPairUser = new Map(); // userId -> 連続ペア回数
+const lastPairUser = new Map();
 
 // --- ユーティリティ ---
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -79,14 +84,15 @@ function pickRandom(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-function pickWeighted(emojis) {
-  if (!BOOSTED_EMOJI_ID) return pickRandom(emojis);
+// 重み付きプールを事前構築
+function buildWeightedPool(emojis) {
+  if (!BOOSTED_EMOJI_ID) return emojis;
   const pool = [];
   for (const e of emojis) {
     const count = e.id === BOOSTED_EMOJI_ID ? BOOSTED_WEIGHT : 1;
     for (let i = 0; i < count; i++) pool.push(e);
   }
-  return pool[Math.floor(Math.random() * pool.length)];
+  return pool;
 }
 
 function emojiToString(emoji) {
@@ -140,15 +146,19 @@ async function runSlot(message, emojis) {
   const [finalLeft, finalMid, finalRight] = determineFinalReels(emojis, isJackpot, isNearMiss);
 
   // 統計記録
-  recordSpin(message.author.id, message.author.displayName || message.author.username, isJackpot);
+  const displayName = message.member?.displayName ?? message.author.username;
+  recordSpin(message.author.id, displayName, isJackpot);
 
   const intervals = getIntervals();
   const { phase1End, phase2End } = getPhases();
 
+  // 重み付きプールを1回だけ構築
+  const weightedPool = buildWeightedPool(emojis);
+
   // リーチ判定（左中が同じ絵文字か）
   const isReach = finalLeft.id === finalMid.id;
 
-  const initDisplay = `🎰 ｶﾗｶﾗ… [1/${SPIN_COUNT}]\n${emojiToString(pickWeighted(emojis))} ${emojiToString(pickWeighted(emojis))} ${emojiToString(pickWeighted(emojis))}`;
+  const initDisplay = `🎰 ｶﾗｶﾗ… [1/${SPIN_COUNT}]\n${emojiToString(pickRandom(weightedPool))} ${emojiToString(pickRandom(weightedPool))} ${emojiToString(pickRandom(weightedPool))}`;
   const botMsg = await message.channel.send(initDisplay);
 
   for (let step = 1; step < SPIN_COUNT; step++) {
@@ -164,15 +174,15 @@ async function runSlot(message, emojis) {
     } else if (step > phase2End) {
       left = finalLeft;
       mid = finalMid;
-      right = pickWeighted(emojis);
+      right = pickRandom(weightedPool);
     } else if (step > phase1End) {
       left = finalLeft;
-      mid = pickWeighted(emojis);
-      right = pickWeighted(emojis);
+      mid = pickRandom(weightedPool);
+      right = pickRandom(weightedPool);
     } else {
-      left = pickWeighted(emojis);
-      mid = pickWeighted(emojis);
-      right = pickWeighted(emojis);
+      left = pickRandom(weightedPool);
+      mid = pickRandom(weightedPool);
+      right = pickRandom(weightedPool);
     }
 
     let label = isLastStep ? 'STOP!' : `ｶﾗｶﾗ… [${step + 1}/${SPIN_COUNT}]`;
@@ -230,19 +240,22 @@ function buildRanking() {
   }
 
   const sorted = [...stats.entries()]
-    .sort((a, b) => b[1].spins - a[1].spins);
+    .sort((a, b) => b[1].spins - a[1].spins)
+    .slice(0, 10); // 上位10名に制限
 
   const medals = ['🥇', '🥈', '🥉'];
   let text = '🏆 **今日のシャーマン発表** 🏆\n\n';
 
   sorted.forEach(([, data], i) => {
     const medal = medals[i] || `${i + 1}.`;
+    const safeName = escapeMarkdown(data.username);
     const jackpotText = data.jackpots > 0 ? ` (JACKPOT ${data.jackpots}回!)` : '';
-    text += `${medal} **${data.username}** — ${data.spins}回${jackpotText}\n`;
+    text += `${medal} **${safeName}** — ${data.spins}回${jackpotText}\n`;
   });
 
   const topUser = sorted[0][1];
-  text += `\n👑 今日のシャーマンは **${topUser.username}** （${topUser.spins}回）`;
+  const safeTopName = escapeMarkdown(topUser.username);
+  text += `\n👑 今日のシャーマンは **${safeTopName}** （${topUser.spins}回）`;
 
   return text;
 }
@@ -261,44 +274,56 @@ client.once('ready', () => {
 });
 
 client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
-  if (message.channel.id !== ALLOWED_CHANNEL_ID) return;
-
-  const content = message.content.trim();
-
-  // ランキング表示
-  if (RANKING_TRIGGERS.includes(content)) {
-    await message.channel.send(buildRanking());
-    return;
-  }
-
-  // スロットトリガー判定
-  if (!TRIGGERS.includes(content)) return;
-
-  // クールダウン判定
-  const now = Date.now();
-  const userId = message.author.id;
-  const lastUsed = cooldowns.get(userId) || 0;
-  const remaining = COOLDOWN_SEC * 1000 - (now - lastUsed);
-
-  if (remaining > 0) {
-    const secs = Math.ceil(remaining / 1000);
-    const cdMsg = await message.reply(`⏳ あと${secs}秒待ってね`);
-    setTimeout(() => cdMsg.delete().catch(() => {}), 5000);
-    return;
-  }
-  cooldowns.set(userId, now);
-
-  const emojis = message.guild.emojis.cache.filter((e) => !e.managed).map((e) => e);
-  if (emojis.length < 3) {
-    await message.reply('❌ カスタム絵文字が3つ以上必要です');
-    return;
-  }
-
   try {
-    await runSlot(message, emojis);
+    if (message.author.bot) return;
+    if (message.channel.id !== ALLOWED_CHANNEL_ID) return;
+
+    const content = message.content.trim();
+
+    // ランキング表示
+    if (RANKING_TRIGGERS.includes(content)) {
+      await message.channel.send({ content: buildRanking(), allowedMentions: { parse: [] } });
+      return;
+    }
+
+    // スロットトリガー判定
+    if (!TRIGGERS.includes(content)) return;
+
+    // 同時実行制限
+    if (activeSpins >= MAX_CONCURRENT_SPINS) {
+      const cdMsg = await message.reply('🎰 混み合ってるよ！ちょっと待ってね');
+      setTimeout(() => cdMsg.delete().catch(() => {}), 5000);
+      return;
+    }
+
+    // クールダウン判定
+    const now = Date.now();
+    const userId = message.author.id;
+    const lastUsed = cooldowns.get(userId) || 0;
+    const remaining = COOLDOWN_SEC * 1000 - (now - lastUsed);
+
+    if (remaining > 0) {
+      const secs = Math.ceil(remaining / 1000);
+      const cdMsg = await message.reply(`⏳ あと${secs}秒待ってね`);
+      setTimeout(() => cdMsg.delete().catch(() => {}), 5000);
+      return;
+    }
+
+    const emojis = message.guild.emojis.cache.filter((e) => !e.managed).map((e) => e);
+    if (emojis.length < 3) {
+      await message.reply('❌ カスタム絵文字が3つ以上必要です');
+      return;
+    }
+
+    activeSpins++;
+    cooldowns.set(userId, Date.now());
+    try {
+      await runSlot(message, emojis);
+    } finally {
+      activeSpins--;
+    }
   } catch (err) {
-    console.error('スロット実行エラー:', err);
+    console.error('エラー:', err);
   }
 });
 
