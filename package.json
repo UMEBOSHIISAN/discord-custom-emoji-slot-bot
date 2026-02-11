@@ -1,0 +1,13 @@
+{
+  "name": "discord-slot-bot",
+  "version": "1.0.0",
+  "description": "Discord カスタム絵文字スロットBot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.7"
+  }
+}
