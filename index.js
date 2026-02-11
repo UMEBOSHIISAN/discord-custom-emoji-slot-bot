@@ -175,10 +175,18 @@ app.listen(port, host, () => console.log(`✅ Web: http://${host}:${port}`));
 client.login(process.env.DISCORD_TOKEN);
 
 // --- シャットダウン時の stats 最終 flush ---
+let _isShuttingDown = false;
 async function gracefulShutdown(signal) {
+  if (_isShuttingDown) return; // 再入防止
+  _isShuttingDown = true;
   console.log(`\n${signal} 受信 — stats を保存中...`);
-  await flushStats();
-  process.exit(0);
+  try {
+    await flushStats();
+    process.exit(0);
+  } catch (err) {
+    console.error('シャットダウン中のflushエラー:', err);
+    process.exit(1);
+  }
 }
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
