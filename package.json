@@ -1,7 +1,7 @@
 {
   "name": "discord-custom-emoji-slot-bot",
-  "version": "1.0.0",
-  "description": "Discord Custom Emoji Slot Bot — サーバーのカスタム絵文字で遊ぶスロットBot",
+  "version": "2.0.0",
+  "description": "Discord Custom Emoji Slot Bot — Embed演出 + 統計 + Web管理画面",
   "main": "index.js",
   "license": "MIT",
   "repository": {
@@ -20,7 +20,8 @@
   },
   "dependencies": {
     "discord.js": "^14.16.3",
-    "dotenv": "^16.4.7"
+    "dotenv": "^16.4.7",
+    "express": "^4.21.0"
   },
   "overrides": {
     "undici": "^6.23.0"
