@@ -14,24 +14,38 @@ const BOOSTED_WEIGHT = Math.max(1, parseInt(process.env.BOOSTED_WEIGHT, 10) || 5
 const PAIR_TRIGGER_EMOJI_ID = process.env.PAIR_TRIGGER_EMOJI_ID || '';
 const PAIR_REACTION_EMOJI_ID = process.env.PAIR_REACTION_EMOJI_ID || '';
 const MAX_CONCURRENT_SPINS = 3;
-const RANDOM_EMOJI_COUNT = 5;
+const RANDOM_EMOJI_COUNT = parseInt(process.env.RANDOM_EMOJI_COUNT, 10) || 5;
 
-// 固定絵文字（必ずスロットに含まれる）
-const FIXED_EMOJI_IDS = new Set([
-  '1460302647956607018',
-  '1460560813046628556',
-  '1461568806819463310',
-  '1468991450074321039',
-  '1470971524231073995',
-  '1469916905493106801',
-  '1469558140608450581',
-]);
+// 固定絵文字（.env からカンマ区切りで指定、空なら全絵文字を使用）
+const FIXED_EMOJI_IDS = new Set(
+  (process.env.FIXED_EMOJI_IDS || '').split(',').map((s) => s.trim()).filter(Boolean)
+);
 
-// トリガーワード（完全一致）
-const TRIGGERS = ['りよ', 'リヨ', 'びっぐらぶ', '小林', 'シャーマン', 'スロット', '🎰', '回す'];
+// トリガーワード（.env からカンマ区切りで指定）
+const TRIGGERS = (process.env.TRIGGERS || 'スロット,🎰,回す').split(',').map((s) => s.trim()).filter(Boolean);
 
 // ランキングトリガー
-const RANKING_TRIGGERS = ['今日のシャーマン', 'ランキング'];
+const RANKING_TRIGGERS = (process.env.RANKING_TRIGGERS || 'ランキング').split(',').map((s) => s.trim()).filter(Boolean);
+
+// --- カスタマイズ可能なメッセージ ---
+const MSG_JACKPOT_HIT = process.env.MSG_JACKPOT_HIT || '💥 ドンッ！！\nJACKPOT確定‼️';
+const MSG_JACKPOT_FORCED = process.env.MSG_JACKPOT_FORCED || '💥 JACKPOT確定演出突入‼️';
+const MSG_REACH = process.env.MSG_REACH || 'リーチ？';
+const MSG_JACKPOT_TITLE = process.env.MSG_JACKPOT_TITLE || '大当たり';
+const MSG_BONUS_MODE = process.env.MSG_BONUS_MODE || 'ボーナスモード';
+const MSG_RANKING_HEADER = process.env.MSG_RANKING_HEADER || '🏆 **今日のランキング発表** 🏆';
+const MSG_RANKING_WINNER = process.env.MSG_RANKING_WINNER || '👑 今日の王者は';
+const MSG_RANKING_EMPTY = process.env.MSG_RANKING_EMPTY || '🎰 今日はまだ誰も回してないよ！';
+const MSG_DOUBLE_CHANCE_TRIGGER = process.env.MSG_DOUBLE_CHANCE_TRIGGER || '次こそいける…？';
+const BONUS_EMOJI_ID = process.env.BONUS_EMOJI_ID || '';
+const BONUS_WEIGHT = Math.max(1, parseInt(process.env.BONUS_WEIGHT, 10) || 15);
+const JACKPOT_EMOJI_ID = process.env.JACKPOT_EMOJI_ID || '';
+
+// ハズレメッセージ（.env からカンマ区切りで指定可能）
+const DEFAULT_LOSE_MESSAGES = ['ざんねん！', 'もう一回！', 'ドンマイ！', 'おしい！', '次こそ…！', 'まだまだ！', 'くやしい！', '🫶 BIG LOVE', MSG_BONUS_MODE, MSG_DOUBLE_CHANCE_TRIGGER];
+const LOSE_MESSAGES = process.env.LOSE_MESSAGES
+  ? process.env.LOSE_MESSAGES.split(',').map((s) => s.trim()).filter(Boolean)
+  : DEFAULT_LOSE_MESSAGES;
 
 // 減速インターバル（ms） — SPIN_COUNT=10 用
 const DEFAULT_INTERVALS = [150, 150, 200, 250, 300, 350, 450, 600, 750, 900];
@@ -42,8 +56,8 @@ const cooldowns = new Map();
 // GIF送信済みフラグ（Bot起動中1回だけ）
 let gifSent = false;
 
-// アナルアサシン獲得カウント（ユーザー単位、永続ではない）
-const assassinCounts = new Map();
+// JACKPOT獲得カウント（ユーザー単位、永続ではない）
+const jackpotCounts = new Map();
 
 // チャンネル同時実行数
 let activeSpins = 0;
@@ -84,27 +98,8 @@ const BIG_LOVE_PROB = 0.08; // 約1/12
 const BIG_LOVE_STREAK_TARGET = 3;
 const bigLoveStreaks = new Map();
 
-// メスイキモード（次回スピンで特定絵文字がリーチ出まくり）
-const MESUIKI_EMOJI_ID = '1471023091416174684';
-const MESUIKI_WEIGHT = 15; // 通常の15倍出現
-const mesuikiModeUsers = new Set();
-
-// 特殊ハズレメッセージ（確率2倍トリガー）
-const DOUBLE_CHANCE_MSG = 'ケツ穴が見つかりません';
-
-// ハズレメッセージ（ランダム表示）
-const LOSE_MESSAGES = [
-  'ざんねん！',
-  'もう一回！',
-  'ドンマイ！',
-  'おしい！',
-  '次こそ…！',
-  'まだまだ！',
-  'くやしい！',
-  '🫶 BIG LOVE',
-  'メスイキ',
-  DOUBLE_CHANCE_MSG,
-];
+// ボーナスモード（次回スピンで特定絵文字が大量出現）
+const bonusModeUsers = new Set();
 
 // --- ユーティリティ ---
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -193,10 +188,9 @@ async function runSlot(message, emojis) {
     const streak = (bigLoveStreaks.get(userId) || 0) + 1;
     bigLoveStreaks.set(userId, streak);
     if (streak >= BIG_LOVE_STREAK_TARGET) {
-      // 3連続 → 確定当たり
       bigLoveStreaks.set(userId, 0);
       forcedJackpot = true;
-      await message.channel.send('🫶 **BIG LOVE** 🫶\n🫶 **BIG LOVE** 🫶\n🫶 **BIG LOVE** 🫶\n💥 ケツアナ確定演出突入‼️');
+      await message.channel.send(`🫶 **BIG LOVE** 🫶\n🫶 **BIG LOVE** 🫶\n🫶 **BIG LOVE** 🫶\n${MSG_JACKPOT_FORCED}`);
       await sleep(1500);
     } else {
       await message.channel.send(`🫶 **BIG LOVE** (${streak}/${BIG_LOVE_STREAK_TARGET})`);
@@ -206,13 +200,12 @@ async function runSlot(message, emojis) {
     bigLoveStreaks.set(userId, 0);
   }
 
-  // メスイキモード判定・消費
-  const hasMesuikiMode = mesuikiModeUsers.has(userId);
-  if (hasMesuikiMode) mesuikiModeUsers.delete(userId);
+  // ボーナスモード判定・消費
+  const hasBonusMode = bonusModeUsers.has(userId);
+  if (hasBonusMode) bonusModeUsers.delete(userId);
 
   const hasDoubleChance = doubleChanceUsers.has(userId);
   const effectiveProb = hasDoubleChance ? JACKPOT_PROB * 2 : JACKPOT_PROB;
-  // バフ消費（当たってもハズレても1回で消える）
   if (hasDoubleChance) doubleChanceUsers.delete(userId);
 
   const roll = Math.random();
@@ -227,12 +220,12 @@ async function runSlot(message, emojis) {
   const intervals = getIntervals();
   const { phase1End, phase2End } = getPhases();
 
-  // 重み付きプールを構築（メスイキモード時は特定絵文字を大量ブースト）
+  // 重み付きプールを構築（ボーナスモード時は特定絵文字を大量ブースト）
   let weightedPool;
-  if (hasMesuikiMode) {
+  if (hasBonusMode && BONUS_EMOJI_ID) {
     const pool = [];
     for (const e of emojis) {
-      const count = e.id === MESUIKI_EMOJI_ID ? MESUIKI_WEIGHT : 1;
+      const count = e.id === BONUS_EMOJI_ID ? BONUS_WEIGHT : 1;
       for (let i = 0; i < count; i++) pool.push(e);
     }
     weightedPool = pool;
@@ -274,39 +267,39 @@ async function runSlot(message, emojis) {
 
     // リーチ演出: 左中固定フェーズで左中が揃っている場合
     if (!isLastStep && step > phase2End && isReach) {
-      label = `ｶﾗｶﾗ… [${step + 1}/${SPIN_COUNT}] ケツアナ？`;
+      label = `ｶﾗｶﾗ… [${step + 1}/${SPIN_COUNT}] ${MSG_REACH}`;
     }
 
     let display = `🎰 ${label}\n${emojiToString(left)} ${emojiToString(mid)} ${emojiToString(right)}`;
 
     // JACKPOT 演出
     if (isLastStep && isJackpot) {
-      display += '\n💥 ドンッ！！\nケツアナ確定‼️';
+      display += `\n${MSG_JACKPOT_HIT}`;
     }
 
     // ハズレ演出
     if (isLastStep && !isJackpot) {
       const loseMsg = pickRandom(LOSE_MESSAGES);
       display += `\n${loseMsg}`;
-      // 「ケツ穴が見つかりません」→ 次回確率2倍バフ付与
-      if (loseMsg === DOUBLE_CHANCE_MSG) {
+      // 確率2倍トリガー
+      if (loseMsg === MSG_DOUBLE_CHANCE_TRIGGER) {
         doubleChanceUsers.add(userId);
         display += '\n⚡ 次回の当選確率が2倍！';
       }
-      // 「メスイキ」→ メスイキモード突入
-      if (loseMsg === 'メスイキ') {
-        const mesuikiEmoji = emojis.find((e) => e.id === MESUIKI_EMOJI_ID);
-        if (mesuikiEmoji) {
-          display += `\n${emojiToString(mesuikiEmoji)} メスイキモード突入‼️`;
+      // ボーナスモード突入
+      if (loseMsg === MSG_BONUS_MODE && BONUS_EMOJI_ID) {
+        const bonusEmoji = emojis.find((e) => e.id === BONUS_EMOJI_ID);
+        if (bonusEmoji) {
+          display += `\n${emojiToString(bonusEmoji)} ${MSG_BONUS_MODE}突入‼️`;
         }
-        mesuikiModeUsers.add(userId);
+        bonusModeUsers.add(userId);
       }
     }
 
-    // メスイキモード中の表示（最初のステップのみ）
-    if (step === 1 && hasMesuikiMode) {
-      const mesuikiEmoji = emojis.find((e) => e.id === MESUIKI_EMOJI_ID);
-      const prefix = mesuikiEmoji ? `${emojiToString(mesuikiEmoji)} メスイキモード！\n` : 'メスイキモード！\n';
+    // ボーナスモード中の表示（最初のステップのみ）
+    if (step === 1 && hasBonusMode) {
+      const bonusEmoji = BONUS_EMOJI_ID ? emojis.find((e) => e.id === BONUS_EMOJI_ID) : null;
+      const prefix = bonusEmoji ? `${emojiToString(bonusEmoji)} ${MSG_BONUS_MODE}！\n` : `${MSG_BONUS_MODE}！\n`;
       display = prefix + display;
     }
 
@@ -326,7 +319,6 @@ async function runSlot(message, emojis) {
         }
 
         // 連続ペアチェック → BIG LOVE
-        const userId = message.author.id;
         const streak = (lastPairUser.get(userId) || 0) + 1;
         lastPairUser.set(userId, streak);
         if (streak >= 2) {
@@ -351,15 +343,17 @@ async function runSlot(message, emojis) {
       }
     }
     // GIF 後に絵文字表示
-    const jackpotEmoji = emojis.find((e) => e.id === '1471013241491689473');
-    if (jackpotEmoji) {
-      await message.channel.send(emojiToString(jackpotEmoji));
+    if (JACKPOT_EMOJI_ID) {
+      const jackpotEmoji = emojis.find((e) => e.id === JACKPOT_EMOJI_ID);
+      if (jackpotEmoji) {
+        await message.channel.send(emojiToString(jackpotEmoji));
+      }
     }
-    // アナルアサシン獲得カウント
-    const count = (assassinCounts.get(userId) || 0) + 1;
-    assassinCounts.set(userId, count);
+    // JACKPOT獲得カウント
+    const count = (jackpotCounts.get(userId) || 0) + 1;
+    jackpotCounts.set(userId, count);
     const safeName = escapeMarkdown(displayName);
-    await message.channel.send({ content: `🗡️ **${safeName}** はアナルアサシンを手に入れた（${count}回目）`, allowedMentions: { parse: [] } });
+    await message.channel.send({ content: `🎊 **${safeName}** は${MSG_JACKPOT_TITLE}を引き当てた（${count}回目）`, allowedMentions: { parse: [] } });
   }
 }
 
@@ -368,15 +362,15 @@ function buildRanking() {
   const today = getTodayKey();
   const stats = dailyStats.get(today);
   if (!stats || stats.size === 0) {
-    return '🎰 今日はまだ誰も回してないよ！';
+    return MSG_RANKING_EMPTY;
   }
 
   const sorted = [...stats.entries()]
     .sort((a, b) => b[1].spins - a[1].spins)
-    .slice(0, 10); // 上位10名に制限
+    .slice(0, 10);
 
   const medals = ['🥇', '🥈', '🥉'];
-  let text = '🏆 **今日のシャーマン発表** 🏆\n\n';
+  let text = `${MSG_RANKING_HEADER}\n\n`;
 
   sorted.forEach(([, data], i) => {
     const medal = medals[i] || `${i + 1}.`;
@@ -387,7 +381,7 @@ function buildRanking() {
 
   const topUser = sorted[0][1];
   const safeTopName = escapeMarkdown(topUser.username);
-  text += `\n👑 今日のシャーマンは **${safeTopName}** （${topUser.spins}回）`;
+  text += `\n${MSG_RANKING_WINNER} **${safeTopName}** （${topUser.spins}回）`;
 
   return text;
 }
@@ -442,14 +436,17 @@ client.on('messageCreate', async (message) => {
     }
 
     const allEmojis = message.guild.emojis.cache.filter((e) => !e.managed);
-    const fixed = allEmojis.filter((e) => FIXED_EMOJI_IDS.has(e.id)).map((e) => e);
-    const others = allEmojis.filter((e) => !FIXED_EMOJI_IDS.has(e.id)).map((e) => e);
+    let emojis;
+    if (FIXED_EMOJI_IDS.size > 0) {
+      const fixed = allEmojis.filter((e) => FIXED_EMOJI_IDS.has(e.id)).map((e) => e);
+      const others = allEmojis.filter((e) => !FIXED_EMOJI_IDS.has(e.id)).map((e) => e);
+      const shuffled = others.sort(() => Math.random() - 0.5);
+      const randomPicks = shuffled.slice(0, RANDOM_EMOJI_COUNT);
+      emojis = [...fixed, ...randomPicks];
+    } else {
+      emojis = allEmojis.map((e) => e);
+    }
 
-    // others からランダムに RANDOM_EMOJI_COUNT 個選出
-    const shuffled = others.sort(() => Math.random() - 0.5);
-    const randomPicks = shuffled.slice(0, RANDOM_EMOJI_COUNT);
-
-    const emojis = [...fixed, ...randomPicks];
     if (emojis.length < 3) {
       await message.reply('❌ カスタム絵文字が3つ以上必要です');
       return;
