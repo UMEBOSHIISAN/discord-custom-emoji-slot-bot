@@ -1,16 +1,26 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, escapeMarkdown } = require('discord.js');
 
+// --- 起動時バリデーション (#5) ---
+if (!process.env.DISCORD_TOKEN) {
+  console.error('❌ DISCORD_TOKEN が設定されていません。.env を確認してください。');
+  process.exit(1);
+}
+if (!process.env.ALLOWED_CHANNEL_ID) {
+  console.error('❌ ALLOWED_CHANNEL_ID が設定されていません。.env を確認してください。');
+  process.exit(1);
+}
+
 // --- 設定 ---
 const ALLOWED_CHANNEL_ID = process.env.ALLOWED_CHANNEL_ID;
 const JACKPOT_GIF_URL = process.env.JACKPOT_GIF_URL || '';
 const COOLDOWN_SEC = parseInt(process.env.COOLDOWN_SEC, 10) || 15;
-const SPIN_COUNT = Math.max(4, parseInt(process.env.SPIN_COUNT, 10) || 10);
+const SPIN_COUNT = Math.min(20, Math.max(4, parseInt(process.env.SPIN_COUNT, 10) || 10));
 const JACKPOT_PROB = Math.min(1, Math.max(0, parseFloat(process.env.JACKPOT_PROB) || 0.01));
 const NEAR_MISS_PROB = Math.min(1, Math.max(0, parseFloat(process.env.NEAR_MISS_PROB) || 0.1));
 const SPECIAL_EMOJI_ID = process.env.SPECIAL_EMOJI_ID || '';
 const BOOSTED_EMOJI_ID = process.env.BOOSTED_EMOJI_ID || '';
-const BOOSTED_WEIGHT = Math.max(1, parseInt(process.env.BOOSTED_WEIGHT, 10) || 5);
+const BOOSTED_WEIGHT = Math.min(20, Math.max(1, parseInt(process.env.BOOSTED_WEIGHT, 10) || 5));
 const PAIR_TRIGGER_EMOJI_ID = process.env.PAIR_TRIGGER_EMOJI_ID || '';
 const PAIR_REACTION_EMOJI_ID = process.env.PAIR_REACTION_EMOJI_ID || '';
 const MAX_CONCURRENT_SPINS = 3;
@@ -38,7 +48,7 @@ const MSG_RANKING_WINNER = process.env.MSG_RANKING_WINNER || '👑 今日の王�
 const MSG_RANKING_EMPTY = process.env.MSG_RANKING_EMPTY || '🎰 今日はまだ誰も回してないよ！';
 const MSG_DOUBLE_CHANCE_TRIGGER = process.env.MSG_DOUBLE_CHANCE_TRIGGER || '次こそいける…？';
 const BONUS_EMOJI_ID = process.env.BONUS_EMOJI_ID || '';
-const BONUS_WEIGHT = Math.max(1, parseInt(process.env.BONUS_WEIGHT, 10) || 15);
+const BONUS_WEIGHT = Math.min(20, Math.max(1, parseInt(process.env.BONUS_WEIGHT, 10) || 15));
 const JACKPOT_EMOJI_ID = process.env.JACKPOT_EMOJI_ID || '';
 
 // ハズレメッセージ（.env からカンマ区切りで指定可能）
@@ -101,6 +111,25 @@ const bigLoveStreaks = new Map();
 // ボーナスモード（次回スピンで特定絵文字が大量出現）
 const bonusModeUsers = new Set();
 
+// --- メモリクリーンアップ (#2) ---
+const CLEANUP_INTERVAL = 60 * 60 * 1000; // 1時間
+const COOLDOWN_TTL = COOLDOWN_SEC * 1000 * 2;
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, ts] of cooldowns) {
+    if (now - ts > COOLDOWN_TTL) cooldowns.delete(id);
+  }
+  // 1日経過したデータをクリア
+  for (const [id] of jackpotCounts) {
+    if (!cooldowns.has(id) && !doubleChanceUsers.has(id) && !bonusModeUsers.has(id)) {
+      jackpotCounts.delete(id);
+      bigLoveStreaks.delete(id);
+      lastPairUser.delete(id);
+    }
+  }
+}, CLEANUP_INTERVAL);
+
 // --- ユーティリティ ---
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -122,6 +151,19 @@ function getPhases() {
 
 function pickRandom(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
+}
+
+// 部分 Fisher-Yates: 配列から n 個をランダム抽出 (#4)
+function pickRandomN(arr, n) {
+  const copy = [...arr];
+  const result = [];
+  for (let i = 0; i < n && copy.length > 0; i++) {
+    const j = Math.floor(Math.random() * copy.length);
+    result.push(copy[j]);
+    copy[j] = copy[copy.length - 1];
+    copy.pop();
+  }
+  return result;
 }
 
 // 重み付きプールを事前構築
@@ -440,8 +482,7 @@ client.on('messageCreate', async (message) => {
     if (FIXED_EMOJI_IDS.size > 0) {
       const fixed = allEmojis.filter((e) => FIXED_EMOJI_IDS.has(e.id)).map((e) => e);
       const others = allEmojis.filter((e) => !FIXED_EMOJI_IDS.has(e.id)).map((e) => e);
-      const shuffled = others.sort(() => Math.random() - 0.5);
-      const randomPicks = shuffled.slice(0, RANDOM_EMOJI_COUNT);
+      const randomPicks = pickRandomN(others, RANDOM_EMOJI_COUNT);
       emojis = [...fixed, ...randomPicks];
     } else {
       emojis = allEmojis.map((e) => e);
@@ -461,6 +502,9 @@ client.on('messageCreate', async (message) => {
     }
   } catch (err) {
     console.error('エラー:', err);
+    try {
+      await message.reply('⚠️ エラーが発生しました。もう一度試してね');
+    } catch (_) { /* reply自体が失敗した場合は無視 */ }
   }
 });
 
