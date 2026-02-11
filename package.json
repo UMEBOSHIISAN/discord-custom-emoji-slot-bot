@@ -1,8 +1,20 @@
 {
-  "name": "discord-slot-bot",
+  "name": "discord-custom-emoji-slot-bot",
   "version": "1.0.0",
-  "description": "Discord カスタム絵文字スロットBot",
+  "description": "Discord Custom Emoji Slot Bot — サーバーのカスタム絵文字で遊ぶスロットBot",
   "main": "index.js",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/UMEBOSHIISAN/discord-custom-emoji-slot-bot.git"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "slot",
+    "emoji",
+    "discord.js"
+  ],
   "scripts": {
     "start": "node index.js"
   },
