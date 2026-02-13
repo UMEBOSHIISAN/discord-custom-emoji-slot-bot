@@ -169,7 +169,7 @@ client.on('messageCreate', async (message) => {
 const port = parseInt(process.env.WEB_PORT, 10) || 8787;
 const app = createApp();
 const host = process.env.WEB_HOST || '127.0.0.1';
-app.listen(port, host, () => console.log(`✅ Web: http://${host}:${port}`));
+const server = app.listen(port, host, () => console.log(`✅ Web: http://${host}:${port}`));
 
 // --- Bot起動 ---
 client.login(process.env.DISCORD_TOKEN);
@@ -179,12 +179,18 @@ let _isShuttingDown = false;
 async function gracefulShutdown(signal) {
   if (_isShuttingDown) return; // 再入防止
   _isShuttingDown = true;
-  console.log(`\n${signal} 受信 — stats を保存中...`);
+  console.log(`\n${signal} 受信 — シャットダウン中...`);
   try {
+    // HTTP サーバーを閉じる（新規接続を拒否）
+    await new Promise((resolve) => server.close(resolve));
+    // Discord クライアントを切断
+    client.destroy();
+    // 統計データを保存
     await flushStats();
+    console.log('✅ シャットダウン完了');
     process.exit(0);
   } catch (err) {
-    console.error('シャットダウン中のflushエラー:', err);
+    console.error('シャットダウン中のエラー:', err);
     process.exit(1);
   }
 }
