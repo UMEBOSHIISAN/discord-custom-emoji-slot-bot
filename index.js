@@ -2,7 +2,7 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, escapeMarkdown } = require('discord.js');
 const { loadConfig, getConfig } = require('./lib/config');
 const { loadStats, getStats, recordSpin, flushStats } = require('./lib/stats');
-const { getEmojiPool, rollOutcome, decideFinal, animateSpin, maybeSendGifOnce, fireParticles } = require('./lib/slot');
+const { getEmojiPool, rollOutcome, decideFinal, animateSpin, maybeSendGifOnce, fireParticles, getTodaySetting, getSettingHint } = require('./lib/slot');
 const { createApp } = require('./lib/web');
 
 // --- 起動時バリデーション ---
@@ -134,11 +134,14 @@ client.on('messageCreate', async (message) => {
       const kakuhenRemain = kakuhenMap.get(uid) || 0;
       const isKakuhen = cfg.enableKakuhen !== false && kakuhenRemain > 0;
 
+      // 今日の設定（日替わり）
+      const settingIndex = getTodaySetting();
+
       // 抽選
       const stats = getStats();
       const uStats = stats.users[uid];
       const consLoss = uStats ? uStats.consecutiveLosses : 0;
-      const outcome = rollOutcome(cfg, consLoss, isKakuhen);
+      const outcome = rollOutcome(cfg, consLoss, isKakuhen, settingIndex);
       const final = decideFinal(pool, outcome.result);
 
       // 統計記録
@@ -150,7 +153,7 @@ client.on('messageCreate', async (message) => {
 
       // 演出
       const wins = updated.jackpots + updated.smallHits;
-      await animateSpin(message, pool, final, cfg, outcome, { wins, spins: updated.spins });
+      await animateSpin(message, pool, final, cfg, outcome, { wins, spins: updated.spins, settingIndex });
 
       // パーティクル演出（JACKPOT / 小当たり）
       if (cfg.enableParticle !== false && (outcome.result === 'jackpot' || outcome.result === 'small')) {
