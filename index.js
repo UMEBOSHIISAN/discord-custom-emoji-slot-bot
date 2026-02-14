@@ -2,7 +2,7 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, escapeMarkdown } = require('discord.js');
 const { loadConfig, getConfig } = require('./lib/config');
 const { loadStats, getStats, recordSpin, flushStats } = require('./lib/stats');
-const { getEmojiPool, rollOutcome, decideFinal, animateSpin, maybeSendGifOnce } = require('./lib/slot');
+const { getEmojiPool, rollOutcome, decideFinal, animateSpin, maybeSendGifOnce, fireParticles } = require('./lib/slot');
 const { createApp } = require('./lib/web');
 
 // --- 起動時バリデーション ---
@@ -146,6 +146,11 @@ client.on('messageCreate', async (message) => {
       // 演出
       const wins = updated.jackpots + updated.smallHits;
       await animateSpin(message, pool, final, cfg, outcome, { wins, spins: updated.spins });
+
+      // パーティクル演出（JACKPOT / 小当たり）
+      if (cfg.enableParticle !== false && (outcome.result === 'jackpot' || outcome.result === 'small')) {
+        fireParticles(message.channel, pool, outcome.result).catch(() => {});
+      }
 
       // JACKPOT後処理
       if (outcome.result === 'jackpot') {
