@@ -71,7 +71,8 @@ function buildRanking() {
     const m = medals[i] || `${i + 1}.`;
     const name = escapeMarkdown(u.name);
     const jp = u.jackpots > 0 ? ` (JACKPOT ${u.jackpots}回!)` : '';
-    txt += `${m} **${name}** — ${u.spins}回${jp}\n`;
+    const sp = u.points > 0 ? ` [${u.points}SP]` : '';
+    txt += `${m} **${name}** — ${u.spins}回${jp}${sp}\n`;
   });
   return txt;
 }
@@ -153,7 +154,7 @@ client.on('messageCreate', async (message) => {
 
       // 演出
       const wins = updated.jackpots + updated.smallHits;
-      await animateSpin(message, pool, final, cfg, outcome, { wins, spins: updated.spins, settingIndex });
+      await animateSpin(message, pool, final, cfg, outcome, { wins, spins: updated.spins, points: updated.points, settingIndex });
 
       // パーティクル演出（JACKPOT / 小当たり）
       if (cfg.enableParticle !== false && (outcome.result === 'jackpot' || outcome.result === 'small')) {
