@@ -38,6 +38,7 @@ const MAX_CONCURRENT = 3;
 
 // --- ランタイム ---
 const cooldowns = new Map();
+const kakuhenMap = new Map(); // uid → 確変残り回数
 const runtimeState = { gifSent: false };
 let activeSpins = 0;
 
@@ -129,11 +130,15 @@ client.on('messageCreate', async (message) => {
     activeSpins++;
     cooldowns.set(uid, Date.now());
     try {
+      // 確変状態チェック
+      const kakuhenRemain = kakuhenMap.get(uid) || 0;
+      const isKakuhen = cfg.enableKakuhen !== false && kakuhenRemain > 0;
+
       // 抽選
       const stats = getStats();
       const uStats = stats.users[uid];
       const consLoss = uStats ? uStats.consecutiveLosses : 0;
-      const outcome = rollOutcome(cfg, consLoss);
+      const outcome = rollOutcome(cfg, consLoss, isKakuhen);
       const final = decideFinal(pool, outcome.result);
 
       // 統計記録
@@ -150,6 +155,32 @@ client.on('messageCreate', async (message) => {
       // パーティクル演出（JACKPOT / 小当たり）
       if (cfg.enableParticle !== false && (outcome.result === 'jackpot' || outcome.result === 'small')) {
         fireParticles(message.channel, pool, outcome.result).catch(() => {});
+      }
+
+      // 確変状態更新
+      if (cfg.enableKakuhen !== false) {
+        if (outcome.result === 'jackpot') {
+          // JACKPOT → 確変突入（or リセット延長）
+          const spins = cfg.KAKUHEN_SPINS || 5;
+          kakuhenMap.set(uid, spins);
+          const mult = cfg.KAKUHEN_MULTIPLIER || 3;
+          await message.channel.send({
+            content: `🔥 **確変突入！** 次の${spins}回はJACKPOT確率 **${mult}倍** ！`,
+            allowedMentions: { parse: [] },
+          });
+        } else if (isKakuhen) {
+          // 確変中 → カウントダウン
+          const left = kakuhenRemain - 1;
+          if (left <= 0) {
+            kakuhenMap.delete(uid);
+            await message.channel.send({
+              content: '💨 確変終了…通常モードに戻ります',
+              allowedMentions: { parse: [] },
+            });
+          } else {
+            kakuhenMap.set(uid, left);
+          }
+        }
       }
 
       // JACKPOT後処理
